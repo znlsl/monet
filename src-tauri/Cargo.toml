@@ -40,6 +40,8 @@ dirs = "6"
 shell-words = "1"
 log = "0.4"
 regex = "1"
+# 新版 ignore 提高了 MSRV；保持与本项目声明的 Rust 基线兼容。
+ignore = "=0.4.23"
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 rayon = "1.10"
 tauri = { version = "2.10.3", features = ["image-png"] }

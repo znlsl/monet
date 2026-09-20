@@ -1,3 +1,4 @@
+import { prepareReferencedMessage } from './useProjectReferences'
 import { reactive, computed, ref, type Ref, type ComputedRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -1277,10 +1278,11 @@ async function sendMessage(
   state.tail = []
   state.lastSent = { cwd, message, opts }
   try {
+    const preparedMessage = await prepareReferencedMessage(message, cwd)
     await invoke('start_streaming', {
       sessionId,
       cwd,
-      message,
+      message: preparedMessage,
       model: opts.model ?? null,
       effort: opts.effort ?? null,
       fastMode: opts.fastMode ?? null,

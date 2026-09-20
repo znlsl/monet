@@ -18,6 +18,7 @@ import EngineSegmentBlock from './EngineSegmentBlock.vue'
 import EngineAsyncTaskPanel from './EngineAsyncTaskPanel.vue'
 import SessionSurface from '@/components/session/SessionSurface.vue'
 import SessionComposer from '@/components/session/SessionComposer.vue'
+import { prepareReferencedInput } from '@/composables/useProjectReferences'
 import SessionComposerField from '@/components/session/SessionComposerField.vue'
 import SessionComposerAttachments from '@/components/session/SessionComposerAttachments.vue'
 import SessionComposerQueue, { type ComposerQueueItem } from '@/components/session/SessionComposerQueue.vue'
@@ -1497,7 +1498,7 @@ async function serializeRuntimeInput(
   skill?: { name: string; path: string },
 ): Promise<RuntimeInputItem[]> {
   const imageBlocks = images.length ? await imageInput.toImageBlocks(images) : []
-  return [
+  return prepareReferencedInput([
     ...(text ? [{ kind: 'text' as const, text }] : []),
     ...(skill ? [{ kind: 'skill' as const, name: skill.name, path: skill.path }] : []),
     ...imageBlocks.map(block => ({
@@ -1505,7 +1506,7 @@ async function serializeRuntimeInput(
       mediaType: block.source.media_type,
       data: block.source.data,
     })),
-  ]
+  ], text, commandCwd.value)
 }
 
 function resetComposerField() {
@@ -1604,6 +1605,7 @@ async function startTurnWithFastFallback(
 
 async function submitRuntimeInput(item: QueuedRuntimeInput, restoreDraft: boolean): Promise<boolean> {
   if (!reference.value || sending.value) return false
+  const target = reference.value
   sending.value = true
   error.value = null
   const optimisticId = `pending-user-${Date.now()}`
@@ -1619,7 +1621,12 @@ async function submitRuntimeInput(item: QueuedRuntimeInput, restoreDraft: boolea
   anchorOptimisticUserRecord(optimisticRecord, predecessor)
   liveRecords.value.push(optimisticRecord)
   try {
-    const turn = await startTurnWithFastFallback(reference.value, item.input, item.config)
+    const prepared = await prepareReferencedInput(item.input, item.text, commandCwd.value)
+    if (reference.value !== target) {
+      liveRecords.value = liveRecords.value.filter(record => record.id !== optimisticId)
+      return false
+    }
+    const turn = await startTurnWithFastFallback(reference.value, prepared, item.config)
     liveRecords.value = bindOptimisticUserTurn(
       liveRecords.value,
       optimisticId,
@@ -1660,6 +1667,13 @@ async function consumeQueuedInput() {
   effortOverridden.value = next.config.effortOverridden
   await nextTick()
 
+  try {
+    next.input = await prepareReferencedInput(next.input, next.text, commandCwd.value)
+  } catch (cause) {
+    next.status = 'failed'
+    next.error = causeMessage(cause)
+    return
+  }
   const preparation = await prepareSessionForSend(next.input)
   let sent = preparation === 'forked'
   if (preparation === 'attached' && runtimeId.value) {
@@ -1684,7 +1698,7 @@ function removeQueuedInput(id: string) {
 function updateQueuedInput(id: string, text: string) {
   const item = queuedInputs.value.find(candidate => candidate.id === id)
   if (!item || item.status === 'processing') return
-  const nonTextInput = item.input.filter(inputItem => inputItem.kind !== 'text')
+  const nonTextInput = item.input.filter(inputItem => inputItem.kind !== 'text' && inputItem.kind !== 'file')
   item.text = text
   item.input = [
     ...(text ? [{ kind: 'text' as const, text }] : []),
@@ -1721,7 +1735,8 @@ async function processQueuedInput(id: string) {
     item.status = 'processing'
     delete item.error
     try {
-      await sendInputWhileRunning(target, targetRuntimeId, targetTurnId, item.input)
+      const prepared = await prepareReferencedInput(item.input, item.text, commandCwd.value)
+      await sendInputWhileRunning(target, targetRuntimeId, targetTurnId, prepared)
       queuedInputs.value = queuedInputs.value.filter(candidate => candidate.id !== id)
     } catch (cause) {
       liveRecords.value = liveRecords.value.filter(record => record.id !== optimisticId)
@@ -1787,10 +1802,12 @@ async function send() {
     }
   }
   const queueForNextTurn = isBusy.value
+  const target = reference.value
   let consumeAfterPreparation = false
   preparingInput.value = true
   try {
     const inputItems = await serializeRuntimeInput(text, draftImages, explicitSkill)
+    if (reference.value !== target) return
     const queuedItem: QueuedRuntimeInput = {
       id: `queued-input-${++queuedInputSequence}`,
       text,
@@ -2560,9 +2577,10 @@ onUnmounted(() => {
           <SessionComposerField
             ref="composerFieldRef"
             v-model="input"
+            :cwd="commandCwd"
             :class="fieldClass"
             :placeholder="t('session.inputPlaceholder')"
-            :disabled="attaching || resolvingWriterConflict"
+            :disabled="attaching || resolvingWriterConflict || preparingInput"
             @keydown="onInputKeydown"
             @input="onCommandInput"
             @keyup="syncCommandCursor"

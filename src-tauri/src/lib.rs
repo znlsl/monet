@@ -50,6 +50,7 @@ mod routine_env;
 pub mod routine_types;
 /// pub：搜索引擎同时被 monet-mcp 以 #[path] 方式复用（search_sessions 工具）
 pub mod search;
+mod project_files;
 mod scheduler;
 mod service_management;
 mod background_services;
@@ -236,6 +237,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            project_files::search_project_files,
+            project_files::resolve_project_references,
             commands::get_projects,
             commands::get_app_setting,
             commands::set_app_setting,

@@ -1931,5 +1931,15 @@
     "emptyHint": "Click \"+ New Runner\" to start a command,\nor ask your Agent \"how to run this project\" —\nit will register discovered commands here.",
     "spawnFailed": "Failed to start",
     "copied": "Copied"
+  },
+  "references": {
+    "title": "Reference project files",
+    "hint": "Reference a file or directory path for the agent to read as needed",
+    "loading": "Searching…",
+    "error": "Could not search project files. Type again to retry.",
+    "empty": "No matching files or directories",
+    "refine": "Partial results. Type a more specific path.",
+    "keys": "↑↓ Navigate · Enter / Tab Insert · Esc Close",
+    "unavailable": "File reference unavailable. Check it and retry: {reason}"
   }
 }

@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import FileReferencePanel from './FileReferencePanel.vue'
+
+defineOptions({ inheritAttrs: false })
 
 const props = withDefaults(defineProps<{
   modelValue: string
   placeholder?: string
   disabled?: boolean
   maxHeight?: number
+  cwd?: string | null
 }>(), {
   placeholder: '',
   disabled: false,
@@ -22,6 +26,25 @@ const emit = defineEmits<{
 }>()
 
 const element = ref<HTMLTextAreaElement>()
+const referencePanel = ref<InstanceType<typeof FileReferencePanel>>()
+const cursor = ref(0)
+const focused = ref(false)
+const composing = ref(false)
+function syncReferenceCursor() {
+  cursor.value = element.value?.selectionStart ?? 0
+}
+function onKeydown(event: KeyboardEvent) {
+  if (!referencePanel.value?.onKeydown(event)) emit('keydown', event)
+}
+async function insertReference(text: string, position: number) {
+  emit('update:modelValue', text)
+  await nextTick()
+  element.value?.focus()
+  element.value?.setSelectionRange(position, position)
+  syncReferenceCursor()
+  resize()
+  if (element.value) emit('input', new Event('input'))
+}
 let widthObserver: ResizeObserver | null = null
 let resizeFrame = 0
 let observedWidth = 0
@@ -48,6 +71,7 @@ function resetHeight() {
 function onInput(event: Event) {
   emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
   resize()
+  syncReferenceCursor()
   emit('input', event)
 }
 
@@ -76,15 +100,28 @@ defineExpose({ element, resize, resetHeight })
 
 <template>
   <textarea
+    v-bind="$attrs"
     ref="element"
     :value="modelValue"
     :placeholder="placeholder"
     :disabled="disabled"
     rows="1"
-    @keydown="emit('keydown', $event)"
+    :aria-controls="referencePanel?.visible ? referencePanel.id : undefined"
+    :aria-expanded="referencePanel?.visible || false"
+    :aria-activedescendant="referencePanel?.visible ? referencePanel.activeId : undefined"
+    :aria-autocomplete="cwd ? 'list' : undefined"
+    :aria-haspopup="cwd ? 'listbox' : undefined"
+    @focus="focused = true; syncReferenceCursor()"
+    @blur="focused = false"
+    @compositionstart="composing = true"
+    @compositionend="composing = false; syncReferenceCursor()"
+    @keydown="onKeydown"
     @input="onInput"
-    @keyup="emit('keyup', $event)"
-    @click="emit('click', $event)"
-    @select="emit('select', $event)"
+    @keyup="syncReferenceCursor(); emit('keyup', $event)"
+    @click="syncReferenceCursor(); emit('click', $event)"
+    @select="syncReferenceCursor(); emit('select', $event)"
   />
+  <FileReferencePanel ref="referencePanel" :text="modelValue" :cwd="cwd" :cursor="cursor"
+    :field="element" :active="focused && !disabled && !composing && element?.selectionStart === element?.selectionEnd"
+    @insert="insertReference" />
 </template>

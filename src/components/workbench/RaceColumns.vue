@@ -8,6 +8,7 @@ import { useRaceInput } from '@/composables/useRaceInput'
 import { useProjects } from '@/composables/useProjects'
 import { useConfirm } from '@/composables/useConfirm'
 import { shortModel, formatTokens, type TokenUsage, type SessionSummary } from '@/types'
+import SessionComposerField from '@/components/session/SessionComposerField.vue'
 import WorkbenchColumnView from './WorkbenchColumn.vue'
 import { shouldSubmitComposer } from '@/components/session/composerAction'
 import type { WorkbenchTab } from '@/composables/useWorkbench'
@@ -50,6 +51,8 @@ const {
   switchLaneEngine,
 } = useRaceInput(tabRef)
 
+const composerFieldRef = ref<InstanceType<typeof SessionComposerField>>()
+watch(() => composerFieldRef.value?.element, element => { textareaRef.value = element })
 const containerRef = ref<HTMLElement>()
 const showHud = ref(false)
 const enginePickerSessionId = ref<string | null>(null)
@@ -134,13 +137,6 @@ onUnmounted(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
 })
-
-function autoResize() {
-  const el = textareaRef.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px'
-}
 
 function onInputKeydown(e: KeyboardEvent) {
   if (shouldSubmitComposer(e)) {
@@ -307,15 +303,15 @@ function onInputKeydown(e: KeyboardEvent) {
       </div>
 
       <div class="flex items-center gap-2">
-        <textarea
-          ref="textareaRef"
+        <SessionComposerField
+          ref="composerFieldRef"
+          :cwd="race.cwd"
           v-model="inputText"
           :placeholder="t('workbench.race.sharedInput')"
           rows="1"
           :disabled="broadcasting || raceMutationLoading"
           class="flex-1 px-3 py-2 text-sm rounded-md bg-popover border border-border text-foreground placeholder-muted-foreground resize-none overflow-x-hidden placeholder:[white-space:pre-wrap] focus:outline-none focus:border-ring transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           @keydown="onInputKeydown"
-          @input="autoResize"
         />
 
         <button

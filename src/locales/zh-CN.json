@@ -1931,5 +1931,15 @@
     "emptyHint": "点右上角 ＋ 手动运行一条命令，\n或直接问 Agent「这个项目怎么跑」——\n它会把找到的命令登记到这里。",
     "spawnFailed": "启动失败",
     "copied": "已复制"
+  },
+  "references": {
+    "title": "引用项目文件",
+    "hint": "引用文件或目录路径，由 Agent 按需读取",
+    "loading": "正在查找…",
+    "error": "无法搜索项目文件，请重新输入重试",
+    "empty": "没有匹配的文件或目录",
+    "refine": "仅显示部分结果，请输入更完整的路径",
+    "keys": "↑↓ 选择 · Enter / Tab 插入 · Esc 关闭",
+    "unavailable": "文件引用不可用，请检查后重试：{reason}"
   }
 }

@@ -1,3 +1,4 @@
+import { prepareReferencedInput, resolveProjectReferences } from './useProjectReferences'
 import { ref, computed, type Ref } from 'vue'
 import i18n from '../locales'
 import type { WorkbenchTab } from './useWorkbench'
@@ -279,6 +280,7 @@ export function useRaceInput(tab: Ref<WorkbenchTab>) {
     raceError.value = null
     broadcasting.value = true
     try {
+      await resolveProjectReferences(text, race.cwd)
       // thread/start 已绑定渠道；首条消息前改渠道时，以新渠道重建空白 lane。
       // 此时没有历史可丢失，原位替换也不会形成发送后的热切换。
       targets = await Promise.all(targets.map(rebindRuntimeDraftChannel))
@@ -286,7 +288,7 @@ export function useRaceInput(tab: Ref<WorkbenchTab>) {
       const hasNativeLane = targets.some(target => target.context.native)
       const pendingImages = [...imageInput.images.value]
       const images = pendingImages.length ? await imageInput.toImageBlocks(pendingImages) : undefined
-      const genericInput: RuntimeInputItem[] = []
+      let genericInput: RuntimeInputItem[] = []
       if (text) genericInput.push({ kind: 'text', text })
       for (const image of images ?? []) {
         genericInput.push({
@@ -295,6 +297,7 @@ export function useRaceInput(tab: Ref<WorkbenchTab>) {
           data: image.source.data,
         })
       }
+      genericInput = await prepareReferencedInput(genericInput, text, race.cwd)
       const optimisticImages = pendingImages.map(image => ({
         id: image.id,
         dataUrl: image.dataUrl,

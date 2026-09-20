@@ -641,7 +641,10 @@ fn map_input(input: Vec<InputItem>) -> (String, Vec<Value>) {
                 "type": "image",
                 "source": { "type": "base64", "media_type": media_type, "data": data }
             })),
-            InputItem::File { path } => text.push(format!("@{path}")),
+            InputItem::File { path } => text.push(format!(
+                "Read or inspect this referenced local path as needed (JSON): {}",
+                serde_json::to_string(&path).unwrap_or_default()
+            )),
             InputItem::Skill { name, .. } => text.push(format!("/{name}")),
         }
     }
@@ -686,7 +689,7 @@ mod tests {
                 data: "encoded".into(),
             },
         ]);
-        assert_eq!(text, "hello\n@/workspace/file.rs");
+        assert_eq!(text, "hello\nRead or inspect this referenced local path as needed (JSON): \"/workspace/file.rs\"");
         assert_eq!(images.len(), 1);
     }
 }

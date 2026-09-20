@@ -66,6 +66,7 @@ import QuestionCard from './QuestionCard.vue'
 import PlanApprovalCard from './PlanApprovalCard.vue'
 import UserMsgContent from './UserMsgContent.vue'
 import SessionSurface from './session/SessionSurface.vue'
+import { resolveProjectReferences } from '@/composables/useProjectReferences'
 import SessionComposer from './session/SessionComposer.vue'
 import SessionComposerField from './session/SessionComposerField.vue'
 import SessionComposerAttachments from './session/SessionComposerAttachments.vue'
@@ -2074,7 +2075,14 @@ function handleModelSwitch(modelName: string) {
   setModel(modelName)
 }
 
+const preparingMessage = ref(false)
 async function handleSend() {
+  if (preparingMessage.value) return
+  preparingMessage.value = true
+  try { await sendComposerDraft() } finally { preparingMessage.value = false }
+}
+
+async function sendComposerDraft() {
   let text = inputText.value.trim()
   if ((!text && !imageInput.images.value.length) || !currentSession.value) return
   const cs = currentSession.value
@@ -2144,6 +2152,14 @@ async function handleSend() {
   if (parsed.kind === 'pass') {
     text = formatCommandInvocation(parsed.cmd, parsed.arg)
   }
+
+  try {
+    await resolveProjectReferences(text, cwd)
+  } catch (cause) {
+    slashError.value = String(cause)
+    return
+  }
+  if (currentSession.value?.summary.id !== cs.summary.id || composerCwd.value !== cwd) return
 
   // unknown / 普通文本:走原始流式发送
   inputText.value = ''
@@ -3673,6 +3689,7 @@ async function onReload() {
       :busy="stream.streaming || externalRunning || ownProcessBusy"
       :has-content="!!inputText.trim() || !!imageInput.images.value.length"
       can-send-while-busy
+      :send-disabled="preparingMessage"
       :stop-disabled="stopping"
       :stop-loading="stopping"
       :stop-variant="externalRunning && !stream.streaming ? 'danger' : 'accent'"
@@ -3734,6 +3751,8 @@ async function onReload() {
         <SessionComposerField
           ref="composerFieldRef"
           v-model="inputText"
+          :cwd="composerCwd"
+          :disabled="preparingMessage"
           :placeholder="$t('session.inputPlaceholder')"
           :class="fieldClass"
           @keydown="onInputKeydown"
