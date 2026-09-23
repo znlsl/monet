@@ -484,9 +484,9 @@ fn provider_status_label(provider: &ProviderQuota, zh: bool) -> Option<String> {
     Some(match error.kind.as_str() {
         "token_expired" => {
             if zh {
-                "凭据已过期 · 点击下方刷新恢复".into()
+                "Claude 官方凭据已过期 · 请运行 claude auth login".into()
             } else {
-                "Credentials expired · click Refresh below".into()
+                "Claude credentials expired · run claude auth login".into()
             }
         }
         "no_credentials" => {

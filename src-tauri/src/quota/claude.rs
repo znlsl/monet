@@ -241,13 +241,13 @@ pub fn get_quota() -> QuotaInfo {
             }
         }
     }
-    fetch_and_cache(false, false)
+    fetch_and_cache(false)
 }
 
-/// 手动刷新：跳过内存缓存与磁盘 TTL，强制打 API；凭据过期时委托 CLI 续期。
+/// 手动刷新：跳过内存缓存与磁盘 TTL，强制打 API。
 /// 同时被 monet-tray 独立进程调用。
 pub fn refresh_quota() -> QuotaInfo {
-    fetch_and_cache(true, true)
+    fetch_and_cache(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -262,7 +262,7 @@ static ACTIVITY_INFLIGHT: AtomicBool = AtomicBool::new(false);
 static LAST_ACTIVITY_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// 会话活跃信号（watcher 发射 projects-changed 时调用）：缓存年龄超过最小间隔
-/// 才真正打 API，后台线程执行不阻塞调用方。活跃期 token 必然新鲜，不委托 CLI。
+/// 才真正打 API，后台线程执行不阻塞调用方。
 pub fn notify_session_activity<F>(refresh: F)
 where
     F: FnOnce(i64) + Send + 'static,
@@ -291,7 +291,7 @@ pub(super) fn refresh_for_activity(now_ms: i64) {
     {
         // force=true 绕过磁盘 TTL（年龄闸门已由上方 90s 判断承担）。
         // 失败也推进粗闸：90s 内不重试，避免失败风暴
-        let _ = fetch_and_cache(true, false);
+        let _ = fetch_and_cache(true);
         LAST_ACTIVITY_MS.store(Utc::now().timestamp_millis(), Ordering::Relaxed);
     } else {
         // 数据已新鲜（周期刷新或另一进程刚刷过）：粗闸对齐到该时间戳，
@@ -339,9 +339,7 @@ pub fn quota_available() -> bool {
 // Core logic
 // ---------------------------------------------------------------------------
 
-/// delegate_on_expired：token 过期时是否委托 CLI 续期后重试（仅用户手动刷新开启，
-/// 见 delegated_cli_refresh 的铁律说明；活跃节流刷新与周期刷新不委托）
-fn fetch_and_cache(force: bool, delegate_on_expired: bool) -> QuotaInfo {
+fn fetch_and_cache(force: bool) -> QuotaInfo {
     // 限流冷却期内一律不打 API——手动刷新也不例外：打了必 429 且会续期惩罚窗口。
     // 诚实返回旧数据 + 错误标注，让 UI 告知用户「限流中，X 分钟后自动恢复」。
     if let Some(remain) = backoff_remaining_secs() {
@@ -371,18 +369,7 @@ fn fetch_and_cache(force: bool, delegate_on_expired: bool) -> QuotaInfo {
 
     let info = match fetch_quota_inner() {
         Ok(info) => info,
-        // 手动刷新撞上凭据过期：委托 CLI 自刷 Keychain 后重试一次。
-        // 委托失败或重试仍败则照旧回退过期文案，行为与降级前一致
-        Err((msg, kind)) => {
-            if delegate_on_expired && kind == "token_expired" && delegated_cli_refresh() {
-                match fetch_quota_inner() {
-                    Ok(info) => info,
-                    Err((msg, kind)) => return stale_with_error(msg, kind),
-                }
-            } else {
-                return stale_with_error(msg, kind);
-            }
-        }
+        Err((msg, kind)) => return stale_with_error(msg, kind),
     };
     if info.error.is_none() {
         write_disk_cache(&info);
@@ -615,7 +602,7 @@ fn infer_plan(cred: &OAuthCredential) -> Option<String> {
 /// 铁律：Monet 绝不主动 refresh OAuth token——refresh token rotation 场景下，
 /// 我方刷新会作废 Claude Code CLI 持有的 refresh_token，烧毁用户 CLI 登录态。
 /// （tray + 主应用 + CLI 三方共用同一凭据，只有 CLI 拥有写权。）
-/// token 过期时重读凭据源（CLI 日常使用会保持 keychain 新鲜），仍过期则报错等待。
+/// token 过期时重读凭据源，仍过期则报错等待 CLI 正常续期或用户重新登录。
 fn get_valid_token() -> Result<(String, OAuthCredential), (String, &'static str)> {
     let cred =
         read_credential().ok_or(("No Claude credentials found".to_string(), "no_credentials"))?;
@@ -710,21 +697,6 @@ fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Option<std::proce
             }
         }
     }
-}
-
-/// 委托刷新：spawn `claude auth status --json` 促 CLI 自刷 Keychain 后重读。
-/// 铁律不破——refresh token 的消费权始终在 CLI 手里，我方只触发 + 重读；
-/// 仅手动刷新路径调用（自动路径不做：空闲期失真方向保守，且「回来干活」
-/// 场景 CLI 自然续期）。用 lightweight 探测：tray 是 launchd 贫瘠环境，
-/// login shell 不可靠，主 App 的完整探测结果经 L1 缓存共享。
-fn delegated_cli_refresh() -> bool {
-    let Ok(located) = crate::claude_locator::locate_lightweight() else {
-        return false;
-    };
-    let mut cmd = Command::new(&located.path);
-    cmd.args(["auth", "status", "--json"]);
-    cmd.env("PATH", crate::streaming::enhanced_path());
-    output_with_timeout(cmd, Duration::from_secs(12)).is_some_and(|o| o.status.success())
 }
 
 fn read_file_credential() -> Option<OAuthCredential> {
