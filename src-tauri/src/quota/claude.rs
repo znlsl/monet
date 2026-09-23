@@ -123,9 +123,7 @@ struct CredentialsFile {
 #[serde(rename_all = "camelCase")]
 struct OAuthCredential {
     access_token: Option<String>,
-    /// 存在于凭据文件中但 Monet 故意不用：refresh 是 CLI 的专属权力，
-    /// 我方 refresh 会在 token rotation 下作废 CLI 的登录态
-    #[allow(dead_code)]
+    /// 只交给 Claude Code CLI 的 auth login 使用；Monet 不直接调用 token endpoint。
     refresh_token: Option<String>,
     expires_at: Option<u64>,
     scopes: Option<Vec<String>>,
@@ -213,6 +211,34 @@ fn clear_backoff() {
     let _ = std::fs::remove_file(backoff_path());
 }
 
+// CLI 登录失败时避免 tray 与主应用每轮都尝试兑换同一 refresh token。
+const AUTH_RETRY_SECS: i64 = 600;
+
+fn auth_backoff_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("quota-auth-backoff.json")
+}
+
+fn auth_backoff_active() -> bool {
+    let Ok(content) = std::fs::read_to_string(auth_backoff_path()) else {
+        return false;
+    };
+    serde_json::from_str::<BackoffState>(&content)
+        .is_ok_and(|state| state.until_ms > Utc::now().timestamp_millis())
+}
+
+fn write_auth_backoff() {
+    let state = BackoffState {
+        until_ms: Utc::now().timestamp_millis() + AUTH_RETRY_SECS * 1000,
+    };
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = crate::config::atomic_write(&auth_backoff_path(), &json);
+    }
+}
+
+fn clear_auth_backoff() {
+    let _ = std::fs::remove_file(auth_backoff_path());
+}
+
 /// 限流冷却剩余秒数；不在冷却期返回 None。tray 用它渲染「限流中」提示行。
 pub fn backoff_remaining_secs() -> Option<i64> {
     let content = std::fs::read_to_string(backoff_path()).ok()?;
@@ -244,7 +270,7 @@ pub fn get_quota() -> QuotaInfo {
     fetch_and_cache(false)
 }
 
-/// 手动刷新：跳过内存缓存与磁盘 TTL，强制打 API。
+/// 手动刷新：跳过内存缓存与磁盘 TTL，必要时委托 CLI 自动续期后查询 API。
 /// 同时被 monet-tray 独立进程调用。
 pub fn refresh_quota() -> QuotaInfo {
     fetch_and_cache(true)
@@ -598,15 +624,19 @@ fn infer_plan(cred: &OAuthCredential) -> Option<String> {
 // Token management
 // ---------------------------------------------------------------------------
 
-/// 获取可用的 access token。
-/// 铁律：Monet 绝不主动 refresh OAuth token——refresh token rotation 场景下，
-/// 我方刷新会作废 Claude Code CLI 持有的 refresh_token，烧毁用户 CLI 登录态。
-/// （tray + 主应用 + CLI 三方共用同一凭据，只有 CLI 拥有写权。）
-/// token 过期时重读凭据源，仍过期则报错等待 CLI 正常续期或用户重新登录。
+/// 获取可用的 access token。过期时把续期交给官方 CLI，Monet 始终不写 CLI 凭据。
 fn get_valid_token() -> Result<(String, OAuthCredential), (String, &'static str)> {
-    let cred =
+    let mut cred =
         read_credential().ok_or(("No Claude credentials found".to_string(), "no_credentials"))?;
-
+    if token_expiring(&cred) {
+        cred = renew_with_cli(cred);
+    }
+    if token_expiring(&cred) {
+        return Err((
+            "Claude Code credentials expired; automatic renewal failed".into(),
+            "token_expired",
+        ));
+    }
     let has_profile = cred
         .scopes
         .as_ref()
@@ -617,22 +647,71 @@ fn get_valid_token() -> Result<(String, OAuthCredential), (String, &'static str)
             "no_credentials",
         ));
     }
-
-    let now_ms = Utc::now().timestamp_millis() as u64;
-    if cred
-        .expires_at
-        .is_some_and(|exp| now_ms >= exp.saturating_sub(60_000))
-    {
-        return Err((
-            "Token expired; waiting for Claude Code CLI to refresh it".into(),
-            "token_expired",
-        ));
-    }
+    clear_auth_backoff();
     let token = cred
         .access_token
         .clone()
         .ok_or(("No access token".to_string(), "no_credentials"))?;
     Ok((token, cred))
+}
+
+fn token_expiring(cred: &OAuthCredential) -> bool {
+    let now_ms = Utc::now().timestamp_millis() as u64;
+    cred.expires_at
+        .is_some_and(|exp| now_ms >= exp.saturating_sub(60_000))
+}
+
+/// 官方 CLI 是 refresh token 的唯一写入者。即使它返回非零退出码，也以重读后的
+/// 凭据为准：某些 CLI 路径在完成 Keychain 续期后仍会报告命令失败。
+fn renew_with_cli(cred: OAuthCredential) -> OAuthCredential {
+    let latest = read_credential().unwrap_or(cred);
+    if !token_expiring(&latest) {
+        clear_auth_backoff();
+        return latest;
+    }
+    if auth_backoff_active() {
+        return latest;
+    }
+    let Some(refresh_token) = latest
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    else {
+        return latest;
+    };
+    let Some(scopes) = latest.scopes.as_ref().filter(|scopes| !scopes.is_empty()) else {
+        return latest;
+    };
+    let Ok(located) = crate::claude_locator::locate_lightweight() else {
+        write_auth_backoff();
+        return latest;
+    };
+
+    let mut cmd = Command::new(&located.path);
+    cmd.args(["auth", "login", "--claudeai"])
+        .env("PATH", crate::streaming::enhanced_path())
+        .env("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", refresh_token)
+        .env("CLAUDE_CODE_OAUTH_SCOPES", scopes.join(" "));
+    for key in [
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ] {
+        cmd.env_remove(key);
+    }
+    if let Some((key, value)) = crate::config::claude_config_dir_env() {
+        cmd.env(key, value);
+    }
+    // 不记录 CLI 输出，也不把 refresh token 放入 argv 或磁盘。
+    let _ = output_with_timeout(cmd, Duration::from_secs(20));
+    let renewed = read_credential().unwrap_or(latest);
+    if token_expiring(&renewed) {
+        write_auth_backoff();
+    } else {
+        clear_auth_backoff();
+    }
+    renewed
 }
 
 // ---------------------------------------------------------------------------
@@ -668,8 +747,7 @@ fn read_keychain_credential() -> Option<OAuthCredential> {
 }
 
 /// spawn 子进程并限时收集输出；超时 kill 并返回 None。
-/// 轮询 try_wait 而非阻塞 wait：std 无内置超时，且输出量（凭据 JSON /
-/// auth status JSON，几 KB）远小于管道缓冲，子进程不会因无人读而卡写
+/// 轮询 try_wait 而非阻塞 wait：std 无内置超时，且子进程输出量远小于管道缓冲。
 fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Option<std::process::Output> {
     let mut child = cmd
         .stdout(Stdio::piped())
